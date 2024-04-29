@@ -20,36 +20,29 @@ class ORB:
         return ORB(nfeatures=nfeatures, scaleFactor=scaleFactor, nlevels=nlevels, edgeThreshold=edgeThreshold, firstLevel=firstLevel, WTA_K=WTA_K, scoreType=scoreType, patchSize=patchSize, fastThreshold=fastThreshold)
 
     def convert(self, keypoints):
-        # Convert from CPU to GPU
+        # Convert from GPU to CPU
         # TODO: convert the keypoints
         return keypoints
 
+    # TODO: Add detect and compute
+    # https://docs.opencv.org/4.x/d1/d89/tutorial_py_orb.html
+
     def detectAndComputeAsync(self, cv_stereo_img, mask=None):
+        return self.detectAndCompute(cv_stereo_img, mask)
+
+    def detectAndCompute(self, cv_stereo_img, mask=None):
         with vpi.Backend.CUDA:
             src = vpi.asimage(cv_stereo_img).convert(vpi.Format.U8)
-            pyr = src.gaussian_pyramid(3)
-            corners, descriptors = pyr.orb(intensity_threshold=142, max_features_per_level=88, max_pyr_levels=3)
+            pyr = src.gaussian_pyramid(self.nlevels)
+            corners, descriptors = pyr.orb(intensity_threshold=self.edgeThreshold, max_features_per_level=int(self.nfeatures /self.nlevels), max_pyr_levels=self.nlevels)
 
-        out = src.convert(vpi.Format.BGR8, backend=vpi.Backend.CUDA)
+        kpts_cpu = []
+        with corners.rlock_cpu() as corners_data:
+            for i in range(corners.size):
+                x,y = corners_data[i].astype(np.int16)
+                kpts_cpu.append(cv2.KeyPoint(x,y, 3))
 
-        # Draw the keypoints in the output image
-        if corners.size > 0:
-            distances = []
-            with descriptors.rlock_cpu() as descriptors_data:
-                first_desc = descriptors_data[0][0]
-                for i in range(descriptors.size):
-                    curr_desc = descriptors_data[i][0]
-                    hamm_dist = sum([bin(c ^ f).count('1') for c, f in zip(curr_desc, first_desc)])
-                    distances.append(hamm_dist)
-            max_dist = max(distances)
-            max_dist = max(max_dist, 1)
-            cmap = cv2.applyColorMap(np.arange(0, 256, dtype=np.uint8), cv2.COLORMAP_JET)
-            cmap_idx = lambda i: int(round((distances[i] / max_dist) * 255))
+        with descriptors.rlock_cpu() as descriptors_data:
+            desc_cpu = np.array([record['data'] for record in descriptors_data])
 
-            with out.lock_cpu() as out_data, corners.rlock_cpu() as corners_data:
-                for i in range(corners.size):
-                    color = tuple([int(x) for x in cmap[cmap_idx(i), 0]])
-                    kpt = tuple(corners_data[i].astype(np.int16))
-                    cv2.circle(out_data, kpt, 3, color, -1)
-
-        return corners.cpu(), descriptors.cpu()
+        return kpts_cpu, desc_cpu
